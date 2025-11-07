@@ -1,387 +1,96 @@
-
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Lifetime Freight — Zero-Frict RunShip Demo</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lifetime Freight — Zero Resistance Shipping</title>
 <style>
-  :root{--bg:#0f1724;--card:#0b1220;--accent:#0ea5ff;--muted:#94a3b8;--glass:rgba(255,255,255,0.03)}
-  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial}
-  body{background:linear-gradient(180deg,#071025 0%,#071827 60%);color:#e6eef8;display:flex;align-items:center;justify-content:center;padding:20px}
-  .app{width:100%;max-width:980px}
-  header{display:flex;align-items:center;gap:12px;margin-bottom:18px}
-  .logo{width:52px;height:52px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#7dd3fc);display:flex;align-items:center;justify-content:center;color:#012; font-weight:700}
-  h1{margin:0;font-size:18px}
-  .grid{display:grid;grid-template-columns:1fr 360px;gap:16px}
-  .card{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 6px 18px rgba(2,6,23,0.6);min-height:120px}
-  label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
-  input,select,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:var(--glass);color:inherit}
-  button{background:var(--accent);border:0;padding:10px 12px;border-radius:8px;color:#012;font-weight:700;cursor:pointer}
-  .muted{color:var(--muted);font-size:13px}
-  pre{background:#020617;padding:10px;border-radius:8px;overflow:auto;color:#bfe9ff;font-size:13px}
-  .event{font-family:monospace;background:#071428;padding:6px;border-radius:6px;margin-bottom:6px;font-size:13px}
-  .locker{height:120px;background:#020617;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--muted)}
-  .row{display:flex;gap:8px}
-  @media (max-width:940px){.grid{grid-template-columns:1fr;}}
+  body {
+    font-family: system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    background: #f8f8f8;
+    color: #222;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+  }
+  #app {
+    width: 100%;
+    max-width: 480px;
+    padding: 20px;
+    box-shadow: 0 0 12px rgba(0,0,0,0.1);
+    border-radius: 8px;
+    background: white;
+    text-align: center;
+  }
+  h1 {
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+  .desc { font-size: 0.9rem; margin-bottom: 1rem; color: #666; }
+  .qr img { width: 200px; height: 200px; margin: 10px auto; }
+  input, button {
+    width: 100%;
+    padding: 10px;
+    font-size: 1rem;
+    margin: 5px 0;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+  }
+  button {
+    background: #0078ff;
+    color: white;
+    border: none;
+    cursor: pointer;
+  }
+  button:hover { background: #005fcc; }
+  .hidden { display: none; }
 </style>
 </head>
 <body>
-  <div class="app">
-    <header>
-      <div class="logo">LF</div>
-      <div>
-        <h1>Lifetime Freight — Zero-Resistance Demo</h1>
-        <div class="muted">Ticket-first flow · no sign-ups · client-only</div>
-      </div>
-    </header>
-
-    <div class="grid">
-      <!-- LEFT: Primary UI -->
-      <div>
-        <div class="card">
-          <label>Create Ticket (no signup)</label>
-          <div style="display:grid;grid-template-columns:1fr 120px;gap:8px">
-            <input id="desc" placeholder="package description (optional)" />
-            <select id="pickupMode"><option value="locker">Locker</option><option value="counter">Counter</option></select>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:10px">
-            <button id="create">Create Ticket</button>
-            <button id="printSample">Print Sample Label</button>
-            <button id="exportState">Export State</button>
-          </div>
-          <hr style="margin:12px 0;border:none;border-top:1px solid rgba(255,255,255,0.04)"/>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <div>
-              <label class="muted">Last Ticket</label>
-              <div id="lastTicket" class="muted">—</div>
-            </div>
-            <div>
-              <label class="muted">OTP</label>
-              <div id="lastOTP" class="muted">—</div>
-            </div>
-            <div>
-              <label class="muted">QR Payload (copy)</label>
-              <input id="qrPayload" />
-            </div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top:12px">
-          <label>Simulate Kiosk / Locker Open</label>
-          <div style="display:flex;gap:8px">
-            <input id="k_ticket" placeholder="ticketID or paste full QR payload" />
-            <input id="k_otp" placeholder="OTP (6 digits)" style="width:120px" />
-            <button id="k_open">Open Locker</button>
-          </div>
-          <div style="margin-top:10px">
-            <div id="k_result" class="muted">—</div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top:12px">
-          <label>Event Log (local edge)</label>
-          <div id="events" style="max-height:300px;overflow:auto;margin-top:8px"></div>
-        </div>
-      </div>
-
-      <!-- RIGHT: Sidebar / Locker -->
-      <div>
-        <div class="card">
-          <label>Locker</label>
-          <div id="lockerVisual" class="locker">Locked</div>
-          <div style="margin-top:10px" class="muted">Locker will "open" when kiosk validates OTP + event chain.</div>
-        </div>
-
-        <div class="card" style="margin-top:12px">
-          <label>Device Keys (demo)</label>
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <button id="genKey">Generate Key</button>
-            <button id="showPub">Show Public Key</button>
-          </div>
-          <pre id="pubKey" style="height:120px">no key</pre>
-          <div style="margin-top:8px" class="muted">Keys are stored locally in browser (JWK). Production requires secure enclaves.</div>
-        </div>
-
-        <div class="card" style="margin-top:12px">
-          <label>State / Debug</label>
-          <div class="muted">IndexedDB status & ability to wipe</div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button id="wipe">WIPE DB</button>
-            <button id="showState">Show DB</button>
-          </div>
-          <pre id="dbg" style="height:160px">—</pre>
-        </div>
-      </div>
-    </div>
+<div id="app">
+  <h1>Lifetime Freight</h1>
+  <div id="mobile" class="hidden">
+    <p class="desc">📦 Create or scan a shipment ticket.</p>
+    <input id="ticketID" placeholder="Enter Ticket ID or Scan QR" />
+    <button onclick="submitTicket()">Submit</button>
+    <div id="result"></div>
   </div>
+  <div id="desktop" class="hidden">
+    <p class="desc">🖥️ Kiosk Mode: display ticket QR for mobile pickup.</p>
+    <button onclick="generateTicket()">Generate Ticket QR</button>
+    <div id="qrDisplay" class="qr"></div>
+  </div>
+</div>
 
 <script>
-/*
-  Lifetime Freight — Zero-Resistance Demo
-  - IndexedDB edge store for tickets & events
-  - WebCrypto ECDSA signatures
-  - OTP (salted hash) stored only as hash
-  - Single-file, client-side demo
-*/
+// device detection
+const isMobile = /Mobi|Android/i.test(navigator.userAgent);
+document.getElementById(isMobile ? 'mobile' : 'desktop').classList.remove('hidden');
 
-// ---------- Simple IndexedDB helpers ----------
-const DB_NAME = 'lf_edge_v1';
-const DB_VERSION = 1;
-let db = null;
-function openDB(){ return new Promise((resolve,rej)=>{
-  const r = indexedDB.open(DB_NAME, DB_VERSION);
-  r.onupgradeneeded = e => {
-    const idb = e.target.result;
-    if(!idb.objectStoreNames.contains('tickets')) idb.createObjectStore('tickets',{keyPath:'ticketID'});
-    if(!idb.objectStoreNames.contains('events')) idb.createObjectStore('events',{keyPath:'eventID'});
-    if(!idb.objectStoreNames.contains('meta')) idb.createObjectStore('meta',{keyPath:'k'});
-  };
-  r.onsuccess = e => { db = e.target.result; resolve(db); };
-  r.onerror = e => rej(e);
-});}
-function put(store, rec){ return new Promise((res,rej)=>{
-  const tx = db.transaction(store,'readwrite'); tx.objectStore(store).put(rec);
-  tx.oncomplete = ()=>res(true); tx.onerror = e=>rej(e);
-});}
-function get(store, key){ return new Promise((res,rej)=>{
-  const tx = db.transaction(store,'readonly'); const req = tx.objectStore(store).get(key);
-  req.onsuccess = ()=>res(req.result); req.onerror = e=>rej(e);
-});}
-function all(store){ return new Promise((res,rej)=>{
-  const tx = db.transaction(store,'readonly'); const req = tx.objectStore(store).openCursor();
-  const out=[]; req.onsuccess = e=>{ const c=e.target.result; if(c){ out.push(c.value); c.continue(); } else res(out); }; req.onerror = e=>rej(e);
-});}
-function delDB(){ return new Promise((res,rej)=>{ const r=indexedDB.deleteDatabase(DB_NAME); r.onsuccess=res; r.onerror=rej; });}
-
-// ---------- Crypto helpers ----------
-async function genKeyPair(){
-  const kp = await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'}, true, ['sign','verify']);
-  const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
-  const priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
-  await put('meta',{k:'deviceKey', value:{pub,priv}});
-  return {pub,priv};
-}
-async function loadKeys(){
-  const rec = await get('meta','deviceKey');
-  return rec?rec.value:null;
-}
-async function signRaw(messageUint8){
-  const keys = await loadKeys();
-  if(!keys) throw new Error('no key');
-  const priv = await crypto.subtle.importKey('jwk', keys.priv, {name:'ECDSA',namedCurve:'P-256'}, false, ['sign']);
-  return crypto.subtle.sign({name:'ECDSA',hash:{name:'SHA-256'}}, priv, messageUint8);
-}
-async function verifyRaw(pubJwk, signature, messageUint8){
-  const pub = await crypto.subtle.importKey('jwk', pubJwk, {name:'ECDSA',namedCurve:'P-256'}, false, ['verify']);
-  return crypto.subtle.verify({name:'ECDSA',hash:{name:'SHA-256'}}, pub, signature, messageUint8);
-}
-async function digestHex(str){
-  const buf = new TextEncoder().encode(str);
-  const h = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(h)).map(b=>b.toString(16).padStart(2,'0')).join('');
+// generate QR for kiosk view
+async function generateTicket(){
+  const ticketID = 'TCK_' + Math.floor(Math.random()*999999);
+  const otp = Math.floor(100000 + Math.random() * 900000);
+  const qrPayload = JSON.stringify({ ticketID, otp });
+  const qrURL = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(qrPayload)}&size=200x200`;
+  document.getElementById('qrDisplay').innerHTML = `
+    <h3>Ticket: ${ticketID}</h3>
+    <p>OTP: ${otp}</p>
+    <img src="${qrURL}" alt="QR Code">
+  `;
 }
 
-// ---------- Utility ----------
-function nowTs(){ return new Date().toISOString(); }
-function uid(prefix='T'){ return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
-function toHex(buf){ return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-function b64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
-
-// ---------- Event chain builders ----------
-async function appendEvent(ticketID, deviceID, type, payload){
-  // payload is object -> we store stringified
-  const prev = await get('tickets',ticketID);
-  const prevHead = prev?prev.eventsHead:null;
-  const payloadStr = JSON.stringify({type,payload,ts:nowTs()});
-  const payloadHash = await digestHex(payloadStr + '::' + ticketID);
-  const prevHash = prevHead?prevHead:eventNullHash();
-  const eventID = uid('E');
-  const eventObj = { eventID, ticketID, deviceID, eventType:type, payloadHash, prevHash, timestamp: nowTs() };
-  // sign event JSON
-  const toSign = new TextEncoder().encode(eventID + '|' + ticketID + '|' + payloadHash + '|' + prevHash);
-  const sigBuf = await signRaw(toSign);
-  eventObj.signature = b64(sigBuf);
-  await put('events', eventObj);
-  // update ticket head
-  const newHead = await digestHex(eventID + '|' + eventObj.signature);
-  const t = prev || { ticketID, createdAt: nowTs(), status:'open', eventsHead:null };
-  t.eventsHead = newHead;
-  await put('tickets', t);
-  renderEvents();
-  return eventObj;
+// mobile data entry
+function submitTicket(){
+  const ticketID = document.getElementById('ticketID').value.trim();
+  if(!ticketID){ alert("Enter or scan a ticket ID"); return; }
+  const result = document.getElementById('result');
+  result.innerHTML = `<p>✅ Ticket ${ticketID} submitted.</p>`;
+  setTimeout(()=>{ result.innerHTML = `<p>Locker Ready — Scan QR at kiosk.</p>`; }, 1500);
 }
-function eventNullHash(){ return '0'.repeat(64); }
-
-// ---------- Ticket creation flow ----------
-async function createTicket(desc='', pickupMode='locker'){
-  // ticket object with OTP salted hash
-  const ticketID = uid('TCK');
-  const otp = Math.floor(100000 + Math.random()*900000).toString();
-  const salt = Math.random().toString(36).slice(2,10);
-  const otpHash = await digestHex(salt + '::' + otp);
-  const ticket = { ticketID, desc, pickupMode, createdAt:nowTs(), otpSalt:salt, otpHash, status:'created', eventsHead:null };
-  await put('tickets', ticket);
-  // append created event (signed)
-  await appendEvent(ticketID, 'device:local', 'ticket_created', {desc,pickupMode});
-  // append otp issued event (hash only)
-  await appendEvent(ticketID, 'device:local', 'otp_issued', {otpHash: ticket.otpHash});
-  return { ticketID, otp, qrPayload: `lf://ticket/${ticketID}?otp=${otp}` };
-}
-
-// ---------- Kiosk open / verification ----------
-async function kioskOpen(payloadOrTicket, otpInput){
-  // accept either ticketID or full QR payload
-  let ticketID = payloadOrTicket;
-  if(payloadOrTicket.startsWith && payloadOrTicket.startsWith('lf://')){
-    try {
-      const m = payloadOrTicket.match(/lf:\/\/ticket\/([^?]+)\?otp=(\d{6})/);
-      if(m){ ticketID = m[1]; /* otp from QR could be used */ }
-    } catch(e){}
-  }
-  const ticket = await get('tickets', ticketID);
-  if(!ticket) return {ok:false,msg:'ticket not found'};
-  // verify otp hash
-  const salt = ticket.otpSalt;
-  const expected = ticket.otpHash;
-  const candidate = await digestHex(salt + '::' + otpInput);
-  if(candidate !== expected) return {ok:false,msg:'invalid OTP'};
-  // verify event-chain head exists and event signatures verify (sample verify last 3 events)
-  const evs = await all('events');
-  const forTicket = evs.filter(e=>e.ticketID===ticketID).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-  // verify signatures chain for each event (best-effort)
-  const keys = await loadKeys();
-  if(!keys) return {ok:false,msg:'no device key on this kiosk (demo)'};
-  // verify signatures belong to the same device key (demo uses local key)
-  let allOk = true;
-  for(const e of forTicket){
-    const toSign = new TextEncoder().encode(e.eventID + '|' + e.ticketID + '|' + e.payloadHash + '|' + e.prevHash);
-    const sig = Uint8Array.from(atob(e.signature), c=>c.charCodeAt(0));
-    const ok = await verifyRaw(keys.pub, sig.buffer, toSign);
-    if(!ok) { allOk=false; break; }
-  }
-  if(!allOk) return {ok:false,msg:'event signature verification failed'};
-  // all checks pass: append locker_opened event
-  await appendEvent(ticketID, 'kiosk:local', 'locker_opened', {method:'otp', by:'kiosk:local'});
-  // update ticket status
-  ticket.status='picked';
-  await put('tickets', ticket);
-  return {ok:true,msg:'locker opened'};
-}
-
-// ---------- Renderers & UI wiring ----------
-async function renderEvents(){
-  const container = document.getElementById('events');
-  container.innerHTML = '';
-  const tickets = await all('tickets');
-  const evs = await all('events');
-  // show compressed view: for each ticket show its event chain
-  for(const t of tickets.sort((a,b)=>b.createdAt.localeCompare(a.createdAt))){
-    const wrap = document.createElement('div');
-    wrap.style.borderLeft='3px solid rgba(255,255,255,0.02)';
-    wrap.style.padding='8px';
-    wrap.style.marginBottom='8px';
-    const h = document.createElement('div'); h.className='muted'; h.textContent = `${t.ticketID} · ${t.desc||'(no desc)'} · ${t.pickupMode} · ${t.status}`;
-    wrap.appendChild(h);
-    const related = evs.filter(e=>e.ticketID===t.ticketID).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-    for(const e of related){
-      const d = document.createElement('div'); d.className='event';
-      d.innerHTML = `<div><strong>${e.eventType}</strong> @ ${e.timestamp}</div><div style="font-size:12px;color:#9fbcd8">device:${e.deviceID} • id:${e.eventID.slice(0,12)}</div>`;
-      wrap.appendChild(d);
-    }
-    container.appendChild(wrap);
-  }
-  // update last ticket ui
-  const last = tickets.sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0];
-  if(last){ document.getElementById('lastTicket').textContent = last.ticketID; document.getElementById('lastOTP').textContent = 'OTP stored hashed (copy below)'; document.getElementById('qrPayload').value = `lf://ticket/${last.ticketID}?otp=****** (OTP shown on creation)`; }
-}
-async function showDB(){
-  const tickets = await all('tickets');
-  const evs = await all('events');
-  const meta = await get('meta','deviceKey');
-  document.getElementById('dbg').textContent = JSON.stringify({tickets, events: evs.slice(-20), meta: meta||null}, null, 2);
-}
-
-async function init(){
-  await openDB();
-  const keys = await loadKeys();
-  if(!keys) document.getElementById('pubKey').textContent = 'no key';
-  else document.getElementById('pubKey').textContent = JSON.stringify(keys.pub, null, 2);
-  renderEvents();
-}
-init();
-
-// ---------- DOM wiring ----------
-document.getElementById('genKey').onclick = async ()=>{
-  const k = await genKeyPair();
-  document.getElementById('pubKey').textContent = JSON.stringify(k.pub, null, 2);
-  alert('Device key generated (stored locally).');
-};
-document.getElementById('showPub').onclick = async ()=>{
-  const k = await loadKeys();
-  document.getElementById('pubKey').textContent = k?JSON.stringify(k.pub, null, 2):'no key';
-};
-document.getElementById('create').onclick = async ()=>{
-  const desc = document.getElementById('desc').value || '';
-  const pickupMode = document.getElementById('pickupMode').value;
-  const keys = await loadKeys();
-  if(!keys){ if(!confirm('No device key found. Generate one now?')) return; await genKeyPair(); }
-  const res = await createTicket(desc,pickupMode);
-  document.getElementById('lastTicket').textContent = res.ticketID;
-  document.getElementById('lastOTP').textContent = res.otp;
-  document.getElementById('qrPayload').value = res.qrPayload;
-  // show printable label
-  openPrintWindow(res);
-};
-document.getElementById('k_open').onclick = async ()=>{
-  const t = document.getElementById('k_ticket').value.trim();
-  const otp = document.getElementById('k_otp').value.trim();
-  const kres = await kioskOpen(t, otp);
-  document.getElementById('k_result').textContent = kres.msg;
-  if(kres.ok){
-    document.getElementById('lockerVisual').textContent = 'OPEN';
-    setTimeout(()=>document.getElementById('lockerVisual').textContent='Locked', 6000);
-  }
-  renderEvents();
-};
-document.getElementById('wipe').onclick = async ()=>{
-  if(!confirm('Wipe local DB?')) return;
-  await delDB();
-  location.reload();
-};
-document.getElementById('showState').onclick = showDB;
-document.getElementById('exportState').onclick = async ()=>{
-  const tickets = await all('tickets'); const events = await all('events'); const payload=JSON.stringify({tickets,events},null,2);
-  const blob = new Blob([payload],{type:'application/json'}); const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download='lf_state_export.json'; a.click(); URL.revokeObjectURL(url);
-};
-document.getElementById('printSample').onclick = async ()=>{
-  const tickets = await all('tickets');
-  const t = tickets[ tickets.length-1 ] || null;
-  openPrintWindow(t?{ticketID:t.ticketID,otp:'(hidden)'}:{ticketID:'SAMPLE',otp:'000000'});
-};
-
-// ---------- Print label (simple) ----------
-function openPrintWindow(obj){
-  const html = `
-    <html><head><title>Label ${obj.ticketID}</title><style>body{font-family:Inter,Arial;color:#000;padding:20px} .label{border:2px dashed #111;padding:14px;width:360px} .big{font-size:18px;font-weight:700}</style></head>
-    <body onload="setTimeout(()=>window.print(),300)">
-      <div class="label">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div><strong>Lifetime Freight</strong></div>
-          <div class="big">${obj.ticketID}</div>
-        </div>
-        <hr/>
-        <div><strong>OTP:</strong> ${obj.otp}</div>
-        <div style="margin-top:8px"><strong>Note:</strong> Demo label — not a carrier label</div>
-      </div>
-    </body></html>`;
-  const w = window.open('','_blank','width=420,height=520');
-  w.document.write(html); w.document.close();
-}
-
-// auto render updates every 2s (demo)
-setInterval(renderEvents,2000);
 </script>
 </body>
 </html>
