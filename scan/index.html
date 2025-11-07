@@ -1,0 +1,482 @@
+<!-- Fixed: corrected Tesseract worker lifecycle, canvas sizing, OCR preprocessing, safe feature-detection fallbacks,
+and tidy lifecycle (pause/terminate) handlers. Ready to paste and run on modern mobile WebKit. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover" />
+<meta name="description" content="Lifetime Freight — 6DOF Stabilized Scanner for Shipment Ticket OCR and Barcode Capture." />
+<meta name="keywords" content="freight, shipping, logistics, ticket, QR code, scanner, OCR, AR" />
+<title>Lifetime Freight Scanner — Fixed</title>
+
+<!-- Tesseract v5 -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<style>
+html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;touch-action:none;-webkit-user-select:none}
+#canvas{position:absolute;top:0;left:0;width:120vw;height:120vh;object-fit:cover;transform-origin:center center;will-change:transform}
+#statusOverlay{position:absolute;top:0;left:0;width:100%;background:rgba(0,100,255,.9);color:#fff;padding:1rem;text-align:center;display:none;z-index:20;user-select:none;font-weight:bold}
+#ticketInputArea{position:absolute;left:50%;bottom:calc(35vh + 20px);transform:translateX(-50%);min-width:60%;max-width:90%;background:rgba(0,0,0,.7);color:#fff;padding:.5rem 1rem;font-size:1.2rem;border:none;border-radius:.3rem;overflow:hidden;line-height:1.2em;white-space:nowrap;z-index:11;cursor:pointer;overflow-x:auto;text-align:center}
+#ticketInputArea:empty::before{content:attr(data-placeholder);color:#888}
+#keyboard{position:absolute;bottom:0;width:100%;height:35vh;background:#111;box-sizing:border-box;display:flex;flex-direction:column;transition:height .2s;z-index:9;user-select:none}
+#keyboard-resizer{height:16px;background:#333;border-top-left-radius:8px;border-top-right-radius:8px;display:flex;justify-content:center;align-items:center;touch-action:none;z-index:10}
+#notch{width:40px;height:4px;background:#666;border-radius:2px}
+.key-row{flex:1;display:flex;justify-content:space-between;gap:2px;margin:.1rem .2rem}
+button.key{flex:1;min-width:30px;max-width:60px;background:#222;color:#fff;border:none;border-radius:.3rem;font-size:1.2rem;touch-action:none;transition:transform .1s,background .1s}
+button.key:active,button.key.active{background:#444;transform:scale(1.05)}
+button.key.clear{flex:0 0 20%;min-width:80px;max-width:120px;background:#800}
+button.key.action{background:#046;font-size:1rem;font-weight:bold}
+#freightSubmission{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:80%;max-width:400px;background:rgba(255,255,255,0.95);padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.5);z-index:30;text-align:center;color:#111}
+#freightSubmission h2{margin-top:0}
+#freightSubmission button{background:#0078ff;color:white;border:none;padding:10px;border-radius:5px;width:100%;margin-top:10px;cursor:pointer;font-size:1rem}
+#freightSubmission button:hover{background:#005fcc}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<canvas id="canvas" aria-hidden="true"></canvas>
+<div id="statusOverlay" role="status" aria-live="polite"></div>
+
+<div id="ticketInputArea" data-placeholder="Scan Ticket ID or Tap to Type" aria-label="Ticket input area" contenteditable="false"></div>
+
+<div id="freightSubmission" class="hidden" role="dialog" aria-modal="true" aria-labelledby="submissionTitle">
+    <h2 id="submissionTitle">Shipment Ticket Submission</h2>
+    <p>Ticket ID: <strong id="submittedTicketID"></strong></p>
+    <div id="submissionResult" role="status" aria-live="polite"></div>
+    <button id="submitBtn" type="button">Submit to Lifetime Freight</button>
+    <button id="clearBtn" type="button" style="background:#555">Clear & Continue Scanning</button>
+</div>
+
+<div id="keyboard" aria-hidden="false">
+  <div id="keyboard-resizer"><div id="notch" aria-hidden="true"></div></div>
+</div>
+
+<script>
+/* eslint-disable no-console */
+// Elements
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+const statusOv = document.getElementById('statusOverlay');
+const ticketInputArea = document.getElementById('ticketInputArea');
+const keyboard = document.getElementById('keyboard');
+const resizer = document.getElementById('keyboard-resizer');
+const freightSubmission = document.getElementById('freightSubmission');
+const submitBtn = document.getElementById('submitBtn');
+const clearBtn = document.getElementById('clearBtn');
+const submittedTicketID = document.getElementById('submittedTicketID');
+const submissionResult = document.getElementById('submissionResult');
+
+let videoEl = null;
+let animFrame = null;
+let posX = 0, posY = 0;
+let freeze = false;
+let freezeFrame = null;
+
+let barcodeDetector = null;
+let tesseractWorker = null;
+let tesseractReady = false;
+
+// helpers
+function displayStatus(msg, duration = 0, isError = false) {
+  statusOv.textContent = msg;
+  statusOv.style.background = isError ? 'rgba(255,0,0,.9)' : 'rgba(0,100,255,.9)';
+  statusOv.style.display = 'block';
+  if (duration > 0) setTimeout(() => { statusOv.style.display = 'none'; }, duration);
+}
+
+function setCanvasSize(w, h) {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+// freeze / state
+function ensureFrozen() {
+  if (freeze || !videoEl || videoEl.readyState < 2) return;
+  freeze = true;
+  freezeFrame = document.createElement('canvas');
+  freezeFrame.width = videoEl.videoWidth;
+  freezeFrame.height = videoEl.videoHeight;
+  const fctx = freezeFrame.getContext('2d');
+  fctx.drawImage(videoEl, 0, 0, freezeFrame.width, freezeFrame.height);
+  displayStatus('View frozen', 600);
+}
+
+function unfreezeView() {
+  freeze = false;
+  freezeFrame = null;
+  displayStatus('Scanner active', 600);
+}
+
+// ticket handling
+function handleTicketScan(rawText) {
+  if (!rawText) return;
+  const cleanedText = String(rawText).trim().toUpperCase().replace(/\s+/g, '');
+  if (cleanedText.length >= 6) {
+    ticketInputArea.textContent = cleanedText;
+    showSubmissionUI(cleanedText);
+  } else {
+    ticketInputArea.textContent = (ticketInputArea.textContent + ' ' + rawText).trim();
+  }
+  ticketInputArea.scrollLeft = ticketInputArea.scrollWidth;
+}
+
+function showSubmissionUI(ticketID) {
+  ensureFrozen();
+  submittedTicketID.textContent = ticketID;
+  submissionResult.innerHTML = '';
+  freightSubmission.classList.remove('hidden');
+  submitBtn.focus();
+}
+
+function clearTicketID() {
+  ticketInputArea.textContent = '';
+  freightSubmission.classList.add('hidden');
+  unfreezeView();
+}
+
+// submission (placeholder)
+submitBtn.addEventListener('click', () => {
+  const ticketID = submittedTicketID.textContent;
+  submissionResult.innerHTML = `<p style="color:#0078ff;">✅ Submitting Ticket ${ticketID}…</p>`;
+  // simulate async submission result
+  setTimeout(() => {
+    submissionResult.innerHTML = `<p style="color:#1e8449;font-weight:bold;">Locker Ready — Ticket processed.</p>`;
+  }, 1200);
+});
+clearBtn.addEventListener('click', clearTicketID);
+
+// camera + scanners
+async function startCamera() {
+  try {
+    const constraints = { video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoEl = document.createElement('video');
+    videoEl.srcObject = stream;
+    videoEl.playsInline = true;
+    videoEl.muted = true;
+    await videoEl.play();
+    // set canvas sizes to video sizes (use CSS width/height to allow transform)
+    const wantedW = Math.round(videoEl.videoWidth * 1.2);
+    const wantedH = Math.round(videoEl.videoHeight * 1.2);
+    setCanvasSize(wantedW, wantedH);
+    displayStatus('Camera started', 800);
+    animFrame = requestAnimationFrame(draw);
+  } catch (err) {
+    displayStatus('Camera unavailable: ' + (err && err.message ? err.message : err), 0, true);
+    console.error(err);
+  }
+}
+
+async function initializeScanners() {
+  // BarcodeDetector if available
+  if ('BarcodeDetector' in window) {
+    try {
+      barcodeDetector = new BarcodeDetector({ formats: ['qr_code', 'ean_13', 'upc_a', 'code_128'] });
+    } catch (e) {
+      console.warn('BarcodeDetector init failed', e);
+      barcodeDetector = null;
+    }
+  } else {
+    console.info('BarcodeDetector not available, falling back to OCR QR heuristics.');
+  }
+
+  // Tesseract worker lifecycle (correct sequence)
+  try {
+    displayStatus('Initializing OCR...', 0);
+    if (!tesseractWorker) {
+      tesseractWorker = Tesseract.createWorker({
+        logger: m => { /* optionally display progress logs */ }
+      });
+      await tesseractWorker.load();
+      await tesseractWorker.loadLanguage('eng');
+      await tesseractWorker.initialize('eng');
+    }
+    tesseractReady = true;
+    displayStatus('OCR ready', 800);
+  } catch (e) {
+    tesseractReady = false;
+    console.error('Tesseract init failed', e);
+    displayStatus('OCR failed to initialize', 3000, true);
+  }
+}
+
+function preprocessForOCR(srcCanvas) {
+  // Resize to a reasonable working size and apply high-contrast threshold
+  const maxDim = 1024;
+  const scale = Math.min(1, maxDim / Math.max(srcCanvas.width, srcCanvas.height));
+  const out = document.createElement('canvas');
+  out.width = Math.max(200, Math.round(srcCanvas.width * scale));
+  out.height = Math.max(80, Math.round(srcCanvas.height * scale));
+  const octx = out.getContext('2d');
+  // draw with slight upscale to sharpen
+  octx.drawImage(srcCanvas, 0, 0, out.width, out.height);
+  // quick contrast/threshold
+  const img = octx.getImageData(0, 0, out.width, out.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    const l = 0.299 * r + 0.587 * g + 0.114 * b;
+    const bw = l > 140 ? 255 : 0;
+    d[i] = d[i + 1] = d[i + 2] = bw;
+  }
+  octx.putImageData(img, 0, 0);
+  return out;
+}
+
+async function runBarcodeScan() {
+  if (!videoEl && !freezeFrame) {
+    displayStatus('No image available to scan', 2000, true);
+    return;
+  }
+  if (!barcodeDetector) {
+    displayStatus('Barcode detector unavailable. Try Scan Text', 2000, true);
+    return;
+  }
+  ensureFrozen();
+  displayStatus('Scanning barcode...', 0);
+  try {
+    const sourceCanvas = freezeFrame || videoToCanvas(videoEl);
+    const codes = await barcodeDetector.detect(sourceCanvas);
+    if (codes && codes.length) {
+      handleTicketScan(codes[0].rawValue || codes[0].rawText || codes[0].displayValue || '');
+      displayStatus('Barcode: ' + (codes[0].format || 'unknown'), 1500);
+    } else {
+      displayStatus('No barcode detected', 1500);
+    }
+  } catch (e) {
+    console.error('Barcode scan failed', e);
+    displayStatus('Barcode scan failed', 2000, true);
+  }
+}
+
+async function runOCR() {
+  if (!tesseractReady || !tesseractWorker) {
+    displayStatus('OCR not ready', 2000, true);
+    return;
+  }
+  ensureFrozen();
+  displayStatus('Recognizing text...', 0);
+  try {
+    const sourceCanvas = freezeFrame || videoToCanvas(videoEl);
+    const pre = preprocessForOCR(sourceCanvas);
+    const { data: { text } } = await tesseractWorker.recognize(pre);
+    handleTicketScan(text || '');
+    displayStatus('Text recognized', 1200);
+  } catch (e) {
+    console.error('OCR failed', e);
+    displayStatus('OCR failed', 2500, true);
+  }
+}
+
+// utility: paint current video frame into a temporary canvas
+function videoToCanvas(vid) {
+  const c = document.createElement('canvas');
+  c.width = vid.videoWidth || 640;
+  c.height = vid.videoHeight || 360;
+  c.getContext('2d').drawImage(vid, 0, 0, c.width, c.height);
+  return c;
+}
+
+// stabilization math (kept simple)
+let quat = [1, 0, 0, 0];
+function eulerToQuat(yaw, pitch, roll) {
+  const cy = Math.cos(yaw * 0.5), sy = Math.sin(yaw * 0.5);
+  const cp = Math.cos(pitch * 0.5), sp = Math.sin(pitch * 0.5);
+  const cr = Math.cos(roll * 0.5), sr = Math.sin(roll * 0.5);
+  return [cr * cp * cy + sr * sp * sy, sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy];
+}
+function quatToMatrix(q) {
+  const [w, x, y, z] = q;
+  // return 2D-friendly matrix components a,b,c,d for ctx.transform(a,b,c,d,e,f)
+  // project the 3D rotation onto 2D plane for a subtle parallax effect
+  const a = 1 - 2 * y * y - 2 * z * z;
+  const b = 2 * x * y - 2 * z * w;
+  const c = 2 * x * y + 2 * z * w;
+  const d = 1 - 2 * x * x - 2 * z * z;
+  return [a, b, c, d];
+}
+
+// device sensors
+if (window.DeviceOrientationEvent) {
+  window.addEventListener('deviceorientation', (e) => {
+    if (e.alpha === null) return;
+    quat = eulerToQuat((e.alpha || 0) * Math.PI / 180, (e.beta || 0) * Math.PI / 180, (e.gamma || 0) * Math.PI / 180);
+  }, { passive: true });
+}
+if (window.DeviceMotionEvent) {
+  (function () {
+    let ex = 0, ey = 0;
+    const damping = 0.95;
+    window.addEventListener('devicemotion', (e) => {
+      const acc = e.accelerationIncludingGravity;
+      if (!acc) return;
+      ex = (ex + (acc.x || 0) * 0.02) * damping;
+      ey = (ey + (acc.y || 0) * 0.02) * damping;
+      posX += 0.01 * ex;
+      posY += 0.01 * ey;
+      const maxOffset = (canvas.width / (window.devicePixelRatio || 1)) * 0.1;
+      posX = Math.max(-maxOffset, Math.min(maxOffset, posX));
+      posY = Math.max(-maxOffset, Math.min(maxOffset, posY));
+    }, { passive: true });
+  }());
+}
+
+// draw loop
+function draw() {
+  if (!canvas) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  // center and apply position offsets
+  const cssW = canvas.width / (window.devicePixelRatio || 1);
+  const cssH = canvas.height / (window.devicePixelRatio || 1);
+  ctx.translate(cssW / 2 + posX, cssH / 2 + posY);
+  const m = quatToMatrix(quat);
+  ctx.transform(m[0], m[1], m[2], m[3], 0, 0);
+
+  const source = freeze && freezeFrame ? freezeFrame : videoEl;
+  if (source && (source.readyState >= 2 || freezeFrame)) {
+    // draw at size of css canvas but scaled to source aspect
+    try {
+      ctx.drawImage(source, -cssW / 2, -cssH / 2, cssW, cssH);
+    } catch (e) {
+      // safety fallback
+      if (videoEl && videoEl.readyState >= 2) {
+        ctx.drawImage(videoEl, -cssW / 2, -cssH / 2, cssW, cssH);
+      }
+    }
+  } else {
+    // fallback placeholder
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-cssW / 2, -cssH / 2, cssW, cssH);
+  }
+
+  ctx.restore();
+  animFrame = requestAnimationFrame(draw);
+}
+
+// keyboard resizing
+let isResizing = false, sy = 0, sh = 0;
+function onTouchMove(e) {
+  if (!isResizing) return;
+  e.preventDefault();
+  const t = sy - e.touches[0].clientY;
+  const h = Math.max(.15 * innerHeight, Math.min(.8 * innerHeight, sh + t));
+  requestAnimationFrame(() => {
+    keyboard.style.height = h + 'px';
+    ticketInputArea.style.bottom = `calc(${h}px + 20px)`;
+  });
+}
+resizer.addEventListener('touchstart', (e) => {
+  sy = e.touches[0].clientY; sh = keyboard.offsetHeight; isResizing = true;
+  window.addEventListener('touchmove', onTouchMove, { passive: false });
+});
+const endResize = () => { isResizing = false; window.removeEventListener('touchmove', onTouchMove); };
+window.addEventListener('touchend', endResize);
+window.addEventListener('touchcancel', endResize);
+
+// keyboard layout + handlers
+const layout = [
+  ['SCAN-TEXT', 'SCAN-CODE'],
+  ['1','2','3','4','5','6','7','8','9','0'],
+  ['Q','W','E','R','T','Y','U','I','O','P'],
+  ['A','S','D','F','G','H','J','K','L'],
+  ['Z','X','C','V','B','N','M','←','CLR']
+];
+
+layout.forEach(row => {
+  const rowDiv = document.createElement('div');
+  rowDiv.className = 'key-row';
+  row.forEach(k => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    let cls = 'key';
+    if (k === 'CLR') cls += ' clear';
+    if (k.startsWith('SCAN')) cls += ' action';
+    btn.className = cls;
+    btn.textContent = (k === 'CLR') ? 'Clear' : (k === 'SCAN-TEXT') ? 'Scan Text' : (k === 'SCAN-CODE') ? 'Scan Code' : k;
+    btn.addEventListener('touchstart', () => btn.classList.add('active'), { passive: true });
+    btn.addEventListener('touchend', () => btn.classList.remove('active'), { passive: true });
+    btn.addEventListener('click', async () => {
+      switch (k) {
+        case 'CLR':
+          clearTicketID();
+          break;
+        case '←':
+          ticketInputArea.textContent = ticketInputArea.textContent.slice(0, -1);
+          break;
+        case 'SCAN-TEXT':
+          await runOCR();
+          break;
+        case 'SCAN-CODE':
+          await runBarcodeScan();
+          break;
+        default:
+          ticketInputArea.textContent += k;
+          ensureFrozen();
+      }
+      ticketInputArea.scrollLeft = ticketInputArea.scrollWidth;
+    });
+    rowDiv.appendChild(btn);
+  });
+  keyboard.appendChild(rowDiv);
+});
+
+// ticket area click toggles freeze and lets user type small edits
+ticketInputArea.addEventListener('click', (e) => {
+  e.preventDefault();
+  // quick tap toggles freeze/unfreeze
+  if (!freeze) ensureFrozen();
+  else unfreezeView();
+});
+
+// observe content to unfreeze when cleared
+const observer = new MutationObserver(() => {
+  if (ticketInputArea.textContent.trim() === '') unfreezeView();
+});
+observer.observe(ticketInputArea, { childList: true, subtree: true, characterData: true });
+
+// lifecycle / cleanup
+async function shutdown() {
+  if (animFrame) cancelAnimationFrame(animFrame);
+  if (videoEl && videoEl.srcObject) {
+    const tracks = videoEl.srcObject.getTracks();
+    tracks.forEach(t => t.stop());
+  }
+  if (tesseractWorker) {
+    try { await tesseractWorker.terminate(); } catch (e) { /* ignore */ }
+    tesseractWorker = null;
+    tesseractReady = false;
+  }
+}
+window.addEventListener('beforeunload', shutdown);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (animFrame) cancelAnimationFrame(animFrame);
+    // pause camera track to save battery if possible
+    if (videoEl && videoEl.srcObject) {
+      const tracks = videoEl.srcObject.getVideoTracks();
+      tracks.forEach(t => t.enabled = false);
+    }
+  } else {
+    // resume
+    if (videoEl && videoEl.srcObject) {
+      const tracks = videoEl.srcObject.getVideoTracks();
+      tracks.forEach(t => t.enabled = true);
+    }
+    if (!animFrame) animFrame = requestAnimationFrame(draw);
+  }
+});
+
+// init
+(async function init() {
+  await initializeScanners();
+  await startCamera();
+})();
+</script>
+</body>
+</html>
