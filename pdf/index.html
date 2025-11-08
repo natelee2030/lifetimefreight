@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>PDF Page Whitener + OCR</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.111/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+<style>
+body { font-family: system-ui; margin: 16px; background: #f7f7f7; }
+input, button { margin: 6px 0; padding: 6px; }
+progress { width: 100%; height: 8px; margin: 6px 0; }
+#status { font-size: 13px; color: #555; margin-top: 4px; }
+canvas { max-width: 100%; margin-top: 10px; background: white; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+
+<h3>PDF Browning Fix + OCR</h3>
+<input type="file" id="pdfFile" accept="application/pdf">
+<button id="startBtn" disabled>Start Whitening</button>
+<label><input type="checkbox" id="doOCR"> Run OCR</label>
+<progress id="prog" value="0" max="100" hidden></progress>
+<div id="status"></div>
+<canvas id="preview" hidden></canvas>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.111/pdf.worker.min.js';
+
+const fileInput = document.getElementById('pdfFile');
+const startBtn = document.getElementById('startBtn');
+const prog = document.getElementById('prog');
+const statusEl = document.getElementById('status');
+const preview = document.getElementById('preview');
+const doOCR = document.getElementById('doOCR');
+
+let pdfDoc;
+
+fileInput.onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+  startBtn.disabled = false;
+  statusEl.textContent = `Loaded PDF with ${pdfDoc.numPages} pages.`;
+};
+
+startBtn.onclick = async () => {
+  if (!pdfDoc) return;
+  startBtn.disabled = true;
+  prog.hidden = false;
+  const total = pdfDoc.numPages;
+  const outPages = [];
+  const texts = [];
+  for (let i = 1; i <= total; i++) {
+    statusEl.textContent = `Rendering page ${i}/${total}`;
+    const page = await pdfDoc.getPage(i);
+    const viewport = page.getViewport({ scale: 2 });
+    const c = document.createElement('canvas');
+    c.width = viewport.width;
+    c.height = viewport.height;
+    const ctx = c.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const d = ctx.getImageData(0, 0, c.width, c.height);
+    const data = d.data;
+    for (let j = 0; j < data.length; j += 4) {
+      const g = 0.3*data[j] + 0.59*data[j+1] + 0.11*data[j+2];
+      const bright = 255 - (255 - g) * 0.5;
+      data[j] = data[j+1] = data[j+2] = bright;
+    }
+    ctx.putImageData(d, 0, 0);
+
+    preview.hidden = false;
+    preview.width = c.width;
+    preview.height = c.height;
+    preview.getContext('2d').drawImage(c,0,0);
+
+    let text = "";
+    if (doOCR.checked) {
+      statusEl.textContent = `Running OCR on page ${i}`;
+      const res = await Tesseract.recognize(c, 'eng');
+      text = res.data.text;
+      texts.push(text);
+    }
+
+    const img = await c.toDataURL('image/jpeg', 0.9);
+    outPages.push(img);
+    prog.value = (i / total) * 100;
+  }
+
+  statusEl.textContent = 'Building output PDF...';
+  const pdfDocOut = await PDFLib.PDFDocument.create();
+  for (const imgUrl of outPages) {
+    const bytes = await fetch(imgUrl).then(r => r.arrayBuffer());
+    const jpg = await pdfDocOut.embedJpg(bytes);
+    const page = pdfDocOut.addPage([jpg.width, jpg.height]);
+    page.drawImage(jpg, { x:0, y:0, width:jpg.width, height:jpg.height });
+  }
+  const finalBytes = await pdfDocOut.save();
+  const blob = new Blob([finalBytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'whitened.pdf';
+  a.click();
+  URL.revokeObjectURL(url);
+
+  if (texts.length) {
+    const txtBlob = new Blob([texts.join('\n\n')], { type: 'text/plain' });
+    const txtUrl = URL.createObjectURL(txtBlob);
+    const t = document.createElement('a');
+    t.href = txtUrl;
+    t.download = 'ocr.txt';
+    t.click();
+    URL.revokeObjectURL(txtUrl);
+  }
+
+  statusEl.textContent = 'Done. Files downloaded.';
+  prog.hidden = true;
+};
+</script>
+
+</body>
+</html>
